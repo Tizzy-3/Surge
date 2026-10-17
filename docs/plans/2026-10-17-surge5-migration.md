@@ -17,7 +17,7 @@
 
 - [x] Adapt surge_signin.js: callback HTTP to Promise, milliseconds to seconds, normalize status/body, preserve cookie merging; native storage/notification APIs. Use native request timeout without clearTimeout dependence.
 - [x] Adapt surge_cookie_capture.js: native storage/notifications; request and response capture; always finish with an empty object without rewriting traffic.
-- [x] Create DailySignIn.sgmodule and surge.conf.example: cron at local 08:00, wake-system, 300-second timeout, WebView; bounded IMYAI response capture; append MITM hosts.
+- [x] Create DailySignIn.sgmodule and surge.conf.example: cron at local 07:00, wake-system, 300-second timeout, WebView; bounded IMYAI response capture; append MITM hosts.
 - [x] Update boxjs.json and README: independent subscription IDs, preserved setting keys, installation links, recapture instructions, version floor, source provenance and validation boundaries.
 - [x] Add meaningful offline tests in tests/surge.test.cjs. Run node --test, node --check for both scripts, and git diff --check. Cover native API contracts, capture persistence, completion, HTTP error/timeout/retry behavior, real CryptoJS/pako loading in an isolated WebView-like context and module resource consistency.
 - [x] Inspect the complete diff and prepare the publication file set with module/BoxJS URLs. Do not claim device validation.

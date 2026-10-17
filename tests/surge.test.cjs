@@ -216,7 +216,7 @@ test('invalid configuration still terminates runner exactly once', async () => {
 test('module uses bounded capture, appends hosts, and references existing resources', () => {
   const moduleText = fs.readFileSync(path.join(root, 'DailySignIn.sgmodule'), 'utf8');
   assert.match(moduleText, /hostname = %APPEND% /);
-  assert.match(moduleText, /cronexp="0 8 \* \* \*"/);
+  assert.match(moduleText, /cronexp="0 7 \* \* \*"/);
   assert.match(moduleText, /type=cron[^\n]*timeout=300[^\n]*wake-system=true[^\n]*engine=webview/);
   const responseLine = moduleText.split(/\r?\n/).find((line) => line.startsWith('Tizzy3 IMYAI Response Capture ='));
   assert.match(responseLine, /requires-body=true,max-size=2097152/);

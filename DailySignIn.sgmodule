@@ -1,8 +1,8 @@
 #!name=Tizzy3 每日签到
-#!desc=哈士奇 / IMYAI / 金蝶云社区签到与凭证捕获。需 Surge iOS 5.9+，安装并信任 MITM 证书。每天设备本地时间 08:00 运行。
+#!desc=哈士奇 / IMYAI / 金蝶云社区签到与凭证捕获。需 Surge iOS 5.9+，安装并信任 MITM 证书。每天设备本地时间 07:00 运行。
 
 [Script]
-Tizzy3 Daily Sign-in = type=cron,cronexp="0 8 * * *",script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_signin.js,timeout=300,wake-system=true,engine=webview
+Tizzy3 Daily Sign-in = type=cron,cronexp="0 7 * * *",script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_signin.js,timeout=300,wake-system=true,engine=webview
 Tizzy3 Hashiqi Capture = type=http-response,pattern=^https://www\.haxiaohaios2\.com/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
 Tizzy3 IMYAI Web Capture = type=http-response,pattern=^https://super\.imyaigc\.com/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
 Tizzy3 IMYAI Request Capture = type=http-request,pattern=^https://api\.(daka\.today|imyaigc\.com)/api/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
