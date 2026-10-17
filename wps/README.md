@@ -1,6 +1,6 @@
 # WPS 每日签到
 
-将原本的 Surge 本地模块托管为远程模块。保留原 MITM 域名、Cookie 捕获规则和上游脚本，定时任务调整为每天设备本地时间 07:36，签到任务超时仍为 120 秒。策略组页面新增手动测试面板；不复制或修改上游脚本。
+将原本的 Surge 本地模块托管为远程模块。保留原 MITM 域名、Cookie 捕获规则和上游脚本，定时任务调整为每天设备本地时间 10:00，签到任务超时仍为 120 秒。策略组页面新增手动测试面板；不复制或修改上游脚本。
 
 ## 安装
 
@@ -17,7 +17,7 @@ https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/WPS.sgmodule
 1. 确认 Surge 正在接管流量，MITM 已开启，证书已经安装并信任。
 2. 打开已登录的 WPS App，进入任务中心、福利中心等活动页面，触发 `page_info` 请求。
 3. 上游捕获脚本会保存 `wps_sid` 并通知 Cookie 获取结果。
-4. 每天设备本地时间 **07:36** 运行，启用 `wake-system=true`，总超时为 120 秒。
+4. 每天设备本地时间 **10:00** 运行，启用 `wake-system=true`，总超时为 120 秒。
 
 从本地模块换成远程模块不会改动凭证键 `wps_sid`；如果之前已在同一个 Surge 中捕获，模块可以继续使用这份设备本地数据。
 
@@ -32,7 +32,7 @@ https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/WPS.sgmodule
 
 此面板使用本仓库的 `wps.panel.js`，签到和 Cookie 捕获仍由原作者脚本负责。设备本地凭证键 `wps_sid` 保持不变。
 
-上游包含一些 10:00 才开放的福利或抽奖任务，07:36 执行时这些任务可能尚未开放；本次按用户要求调整时间，没有改动上游任务逻辑或增加第二个定时任务。
+自动任务安排在每天 10:00，以配合上游福利活动的开放时间；上游任务逻辑和任务开关保持原样。
 
 接口依据：[官方信息面板](https://manual.nssurge.com/tools/panel.html)、[官方定时脚本执行接口](https://manual.nssurge.com/tools/http-api.html)、[脚本内调用 HTTP API](https://manual.nssurge.com/scripting/api.html)。
 

@@ -5,7 +5,7 @@
 | 功能 | 每日运行时间 | 使用说明 |
 | --- | --- | --- |
 | 每日签到：哈士奇 / IMYAI / 金蝶云社区 | 设备本地时间 07:00 | [daily-signin](daily-signin/README.md) |
-| WPS 每日签到 | 设备本地时间 07:36 | [wps](wps/README.md) |
+| WPS 每日签到 | 设备本地时间 10:00 | [wps](wps/README.md) |
 
 ## 每日签到模块
 
@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/Tizzy-3/Surge/main/daily-signin/boxjs.json
 https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/WPS.sgmodule
 ```
 
-将原本的本地模块改为远程订阅，保留 Cookie 捕获及每天 07:36 的定时任务和策略组页「WPS · 手动测试」入口，继续使用 MaYIHEI/paperclip 上游脚本。
+将原本的本地模块改为远程订阅，保留 Cookie 捕获及每天 10:00 的定时任务和策略组页「WPS · 手动测试」入口，继续使用 MaYIHEI/paperclip 上游脚本。
 
 ## 从旧地址迁移
 

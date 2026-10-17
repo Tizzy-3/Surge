@@ -30,10 +30,10 @@ function run({ trigger = 'button', input = { purpose: 'panel' }, cookie = 'fixtu
   return { calls, completions, logs };
 }
 
-test('module preserves upstream scripts and schedules one daily task at 07:36', () => {
+test('module preserves upstream scripts and schedules one daily task at 10:00', () => {
   const text = fs.readFileSync(path.join(root, 'WPS.sgmodule'), 'utf8');
-  assert.match(text, /cronexp="36 7 \* \* \*"/);
-  assert.match(text, /^#!desc=.*07:36/m);
+  assert.match(text, /cronexp="0 10 \* \* \*"/);
+  assert.match(text, /^#!desc=.*10:00/m);
   assert.equal(text.split(/\r?\n/).filter((line) => /type=cron/.test(line)).length, 1);
   assert.match(text, /^WPS签到 = type=cron,[^\n]*wake-system=true,[^\n]*timeout=120,[^\n]*script-path=https:\/\/raw\.githubusercontent\.com\/MaYIHEI\/paperclip\/refs\/heads\/main\/app\/wps\/wps\.js/m);
   assert.match(text, /wps\.cookie\.js/);
@@ -48,7 +48,7 @@ test('policy page and automatic panel refresh never execute WPS', () => {
   for (const trigger of ['auto-interval', 'editor', null]) {
     const result = run({ trigger });
     assert.equal(result.calls.length, 0);
-    assert.match(result.completions[0].content, /07:36/);
+    assert.match(result.completions[0].content, /10:00/);
   }
   assert.equal(run({ input: null }).calls.length, 0);
 });

@@ -12,7 +12,7 @@ function main() {
   const isPanel = typeof $input !== "undefined" && $input && $input.purpose === "panel";
   const isButton = typeof $trigger !== "undefined" && $trigger === "button";
   if (!isPanel || !isButton) {
-    finish("WPS · 手动测试", "点击右上角刷新按钮执行一次 WPS 任务。\n自动运行：每天设备本地时间 07:36。");
+    finish("WPS · 手动测试", "点击右上角刷新按钮执行一次 WPS 任务。\n自动运行：每天设备本地时间 10:00。");
     return;
   }
   if (!$persistentStore.read("wps_sid")) {
