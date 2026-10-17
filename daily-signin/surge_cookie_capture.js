@@ -1,7 +1,7 @@
 /*
  * Surge request/response script for capturing sign-in credentials.
  *
- * Install DailySignIn.sgmodule and enable MITM. After you log in to the websites, this
+ * Enable Cookie capture in BoxJS, install DailySignIn.sgmodule and enable MITM. After you log in to the websites, this
  * script stores cookies/tokens in $persistentStore for surge_signin.js.
  * QX_SIGNIN_ keys are retained for manual BoxJS migration; stores are not shared between apps.
  */
@@ -13,6 +13,10 @@ capture();
 
 function capture() {
   try {
+    // Capture only: scheduled/manual sign-in reads the stored credentials independently.
+    if (!/^(true|1)$/i.test(String(pref(`${PREFIX}CAPTURE_ENABLED`) || "").trim())) {
+      return finish();
+    }
     const req = typeof $request !== "undefined" ? $request : null;
     if (!req || !req.url) {
       return finish("No request object");

@@ -13,7 +13,7 @@
 https://raw.githubusercontent.com/Tizzy-3/Surge/main/daily-signin/DailySignIn.sgmodule
 ```
 
-包含凭证捕获、07:00 定时任务和策略组页的「每日签到 · 手动测试」面板。
+包含07:00定时任务和策略组页的「每日签到 · 手动测试」面板。凭证捕获由 BoxJS「Surge 每日签到 → 允许获取 Cookie」控制，默认关闭。获取所需凭证后手动关闭开关，定时签到继续运行。
 
 BoxJS 订阅：
 
@@ -27,7 +27,15 @@ https://raw.githubusercontent.com/Tizzy-3/Surge/main/daily-signin/boxjs.json
 https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/WPS.sgmodule
 ```
 
-将原本的本地模块改为远程订阅，保留 Cookie 捕获及每天 10:00 的定时任务和策略组页「WPS · 手动测试」入口，继续使用 MaYIHEI/paperclip 上游脚本。
+每天10:00定时任务和策略组页「WPS · 手动测试」入口继续运行作者的签到脚本。Cookie 获取由独立的 BoxJS 开关控制，默认关闭；需要时打开、成功后手动关闭。
+
+WPS 获取开关 BoxJS 订阅（与原作者 Paperclip 任务订阅同时使用）：
+
+```text
+https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/boxjs.json
+```
+
+更新两份模块及其远程脚本后，再刷新或添加相应 BoxJS 订阅。已有 Cookie/JWT 保留，无需重新获取。开关关闭时只停止脚本保存凭证和获取通知，模块的 MITM 和匹配规则仍保留。
 
 ## 从旧地址迁移
 
@@ -43,6 +51,8 @@ https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/WPS.sgmodule
 node --check daily-signin/surge_signin.js
 node --check daily-signin/surge_cookie_capture.js
 node --test daily-signin/tests/surge.test.cjs
+node --check wps/wps.cookie.capture.js
+node --test tests/capture-switches.test.cjs
 node --check wps/wps.panel.js
 node --test wps/tests/wps-panel.test.cjs
 ```

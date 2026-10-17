@@ -21,6 +21,7 @@
         "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/To-do.png"
       ],
       "keys": [
+        "QX_SIGNIN_CAPTURE_ENABLED",
         "QX_SIGNIN_HASHIQI_COOKIE",
         "QX_SIGNIN_HASHIQI_USERNAME",
         "QX_SIGNIN_HASHIQI_PASSWORD",
@@ -36,6 +37,13 @@
         "QX_SIGNIN_PAKO_URL"
       ],
       "settings": [
+        {
+          "id": "QX_SIGNIN_CAPTURE_ENABLED",
+          "name": "允许获取 Cookie",
+          "val": false,
+          "type": "boolean",
+          "desc": "默认关闭。打开后登录哈士奇 / IMYAI / 金蝶云社区获取凭证，所需站点都获取成功后手动关闭。关闭只停止凭证抓取和通知，不清除已有数据，不影响07:00签到及手动测试。"
+        },
         {
           "id": "QX_SIGNIN_WECOM_WEBHOOK_URL",
           "name": "企业微信 Webhook",

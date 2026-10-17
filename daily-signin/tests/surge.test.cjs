@@ -38,6 +38,10 @@ function runCapture(request, response, initial = {}, extra = {}) {
   if (request !== undefined) input.$request = request;
   if (response !== undefined) input.$response = response;
   const env = environment(input, initial);
+  if (!input.$persistentStore) {
+    const read = env.context.$persistentStore.read;
+    env.context.$persistentStore.read = (key) => key === 'QX_SIGNIN_CAPTURE_ENABLED' && !(key in initial) ? 'true' : read(key);
+  }
   vm.runInContext(capture, env.context, { timeout: 1000 });
   assert.equal(env.completions.length, 1, 'capture completes exactly once');
   assert.equal(JSON.stringify(env.completions[0]), '{}', 'capture must preserve original traffic');
@@ -108,7 +112,7 @@ test('unchanged credentials do not cause repeated notifications', () => {
 test('failed persistent writes do not claim capture success', () => {
   const env = runCapture(
     { url: 'https://api.daka.today/api/auth/get-info', headers: { authorization: 'Bearer unsaved-token' } }, undefined, {},
-    { $persistentStore: { read: () => null, write: () => false } },
+    { $persistentStore: { read: (key) => key === 'QX_SIGNIN_CAPTURE_ENABLED' ? 'true' : null, write: () => false } },
   );
   assert.equal(env.notifications.length, 0);
   assert.equal(env.saved.size, 0);

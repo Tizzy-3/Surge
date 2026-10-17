@@ -1,0 +1,27 @@
+{
+  "id": "com.tizzy3.surge.wps-capture-controls",
+  "name": "Tizzy3 Surge WPS 获取开关",
+  "author": "Tizzy3",
+  "repo": "https://github.com/Tizzy-3/Surge/tree/main/wps",
+  "apps": [
+    {
+      "id": "com.tizzy3.surge.wps-capture",
+      "name": "WPS Cookie 获取开关",
+      "desc": "配合 Tizzy3/Surge WPS 模块，仅控制 Cookie 获取；任务开关继续使用原作者 Paperclip 订阅。",
+      "author": "Tizzy3",
+      "repo": "https://github.com/Tizzy-3/Surge/tree/main/wps",
+      "keys": [
+        "wps_capture_enabled"
+      ],
+      "settings": [
+        {
+          "id": "wps_capture_enabled",
+          "name": "允许获取 Cookie",
+          "val": false,
+          "type": "boolean",
+          "desc": "默认关闭。打开后进入已登录 WPS App 的活动页获取 Cookie，成功后手动关闭。关闭不清除 wps_sid，不影响每天10:00签到及手动测试。"
+        }
+      ]
+    }
+  ]
+}

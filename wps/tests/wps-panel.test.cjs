@@ -59,7 +59,7 @@ test('module preserves upstream cron at 10:00 and uses a manually triggered WebV
   assert.match(text, /^#!desc=.*10:00/m);
   assert.equal(text.split(/\r?\n/).filter((line) => /type=cron/.test(line)).length, 1);
   assert.match(text, /^WPS签到 = type=cron,[^\n]*timeout=120,[^\n]*script-path=https:\/\/raw\.githubusercontent\.com\/MaYIHEI\/paperclip\/refs\/heads\/main\/app\/wps\/wps\.js/m);
-  assert.match(text, /wps\.cookie\.js/);
+  assert.match(text, /wps\.cookie\.capture\.js/);
   assert.match(text, /^WPS_Manual_Test = type=generic,[^\n]*wps\/wps\.panel\.js[^\n]*timeout=150,[^\n]*engine=webview/m);
   const line = text.split(/\r?\n/).find((line) => line.startsWith('WPS_Manual_Panel ='));
   assert.match(line, /script-name=WPS_Manual_Test/);
