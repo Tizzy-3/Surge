@@ -54,6 +54,10 @@ const STEP_TITLES = {
 
 main()
   .then(async () => {
+    if (isPassivePanelRun()) {
+      done();
+      return;
+    }
     const report = buildReport(state.lines);
     await pushWeCom(report);
     notify(`每日签到报告 ${todayString()}`, "签到完成", buildNotificationBody(state.lines));
@@ -69,6 +73,10 @@ main()
   });
 
 async function main() {
+  // Opening a policy page or an automatic panel refresh must never sign in.
+  if (isPassivePanelRun()) {
+    return;
+  }
   validateConfig();
   await runStep("hashiqi", signHashiqi);
   await runStep("imyai", signImyai);
@@ -1686,8 +1694,29 @@ function notify(title, subtitle, body) {
   }
 }
 
+function isPanelRun() {
+  return typeof $input !== "undefined" && $input && $input.purpose === "panel";
+}
+
+function isPassivePanelRun() {
+  return isPanelRun() && (typeof $trigger === "undefined" || $trigger !== "button");
+}
+
 function done(value) {
   if (typeof $done !== "undefined") {
+    if (isPanelRun()) {
+      const hasResults = state.lines.length > 0;
+      const failed = state.lines.some((line) => /失败|未签到|error|failed/i.test(line.status || ""));
+      const allSigned = hasResults && state.lines.every((line) => /^(成功|已签到)$/.test(line.status || ""));
+      $done({
+        title: hasResults ? "每日签到 · 执行结果" : "每日签到 · 手动测试",
+        content: hasResults
+          ? `${buildNotificationBody(state.lines)}\n完成时间：${new Date().toLocaleString()}`
+          : "点击右上角刷新按钮，执行一次实际签到。\n自动任务：每天设备本地时间 07:00。",
+        style: failed ? "error" : (allSigned ? "good" : "info"),
+      });
+      return;
+    }
     $done(value || {});
   }
 }

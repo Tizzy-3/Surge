@@ -1,16 +1,20 @@
 # Surge iOS 5.9+ 手动合并片段，不是完整配置。
 # 安装 DailySignIn.sgmodule 后无需添加本片段，避免重复定时运行。
-# 将 [Script] 的各行合并进现有同名节，将 hostname 域名追加到现有列表。
+# 将 [Script]、[Panel] 的各行合并进现有同名节，将 hostname 域名追加到现有列表。
 # 在 Surge 中另行生成、安装并信任 MITM 证书，然后开启 MITM。
 # BoxJS: https://raw.githubusercontent.com/Tizzy-3/Surge/main/boxjs.json
 
 [Script]
-Tizzy3 Daily Sign-in = type=cron,cronexp="0 7 * * *",script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_signin.js,timeout=300,wake-system=true,engine=webview
+Tizzy3_Manual_SignIn = type=generic,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_signin.js?v=manual-panel-1,timeout=300,engine=webview
+Tizzy3 Daily Sign-in = type=cron,cronexp="0 7 * * *",script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_signin.js?v=manual-panel-1,timeout=300,wake-system=true,engine=webview
 Tizzy3 Hashiqi Capture = type=http-response,pattern=^https://www\.haxiaohaios2\.com/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
 Tizzy3 IMYAI Web Capture = type=http-response,pattern=^https://super\.imyaigc\.com/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
 Tizzy3 IMYAI Request Capture = type=http-request,pattern=^https://api\.(daka\.today|imyaigc\.com)/api/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
 Tizzy3 IMYAI Response Capture = type=http-response,pattern=^https://api\.(daka\.today|imyaigc\.com)/api/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=true,max-size=2097152,timeout=10,engine=jsc
 Tizzy3 Kingdee Capture = type=http-response,pattern=^https://vip\.kingdee\.com/,script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/surge_cookie_capture.js,requires-body=false,timeout=10,engine=jsc
+
+[Panel]
+Tizzy3_SignIn_Test = title="每日签到 · 手动测试",content="点击右上角刷新按钮，执行一次实际签到。\n每天 07:00 自动运行。",style=info,script-name=Tizzy3_Manual_SignIn
 
 [MITM]
 hostname = www.haxiaohaios2.com, super.imyaigc.com, api.daka.today, api.imyaigc.com, vip.kingdee.com

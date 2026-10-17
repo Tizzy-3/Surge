@@ -226,7 +226,7 @@ test('module uses bounded capture, appends hosts, and references existing resour
   assert.equal(scriptSection(example), scriptSection(moduleText).replace('hostname = %APPEND% ', 'hostname = '));
   for (const text of [moduleText, example, fs.readFileSync(path.join(root, 'boxjs.json'), 'utf8')]) {
     for (const match of text.matchAll(/https:\/\/raw\.githubusercontent\.com\/Tizzy-3\/Surge\/(?:refs\/heads\/)?main\/([^\s",]+)/g)) {
-      assert.ok(fs.existsSync(path.join(root, match[1])), `missing resource ${match[1]}`);
+      assert.ok(fs.existsSync(path.join(root, match[1].split(/[?#]/)[0])), `missing resource ${match[1]}`);
     }
   }
 });
@@ -347,4 +347,96 @@ test('redirect loops terminate and report a recognizable redirect error', async 
 test('redirects to non-HTTP URLs reject without executing or following them', async () => {
   const env = runnerEnv({ $httpClient: { get: (_, callback) => callback(null, { status: 302, headers: { location: 'javascript:fixture' } }, '') } });
   await assert.rejects(env.context.requestOnce({ url: 'https://fixture.invalid', method: 'GET' }), /Unsupported redirect protocol/);
+});
+
+async function startManualTest(extra, initial, sites) {
+  const env = runnerEnv(extra, initial);
+  if (sites) Object.assign(env.context, sites);
+  const boot = runner.match(/^main\(\)\r?\n[\s\S]*?(?=async function main\()/m)[0];
+  vm.runInContext(boot, env.context, { timeout: 1000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  return env;
+}
+
+test('manual panel is installed with the module and has no automatic refresh interval', () => {
+  const moduleText = fs.readFileSync(path.join(root, 'DailySignIn.sgmodule'), 'utf8');
+  assert.match(moduleText, /^Tizzy3_Manual_SignIn = type=generic,[^\n]*engine=webview/m);
+  assert.match(moduleText, /^\[Panel\]$/m);
+  const panelLine = moduleText.split(/\r?\n/).find((line) => /^Tizzy3_SignIn_Test = /.test(line));
+  assert.ok(panelLine, 'the module needs a visible manual-test panel');
+  assert.match(panelLine, /script-name=Tizzy3_Manual_SignIn/);
+  assert.doesNotMatch(panelLine, /update-interval=/);
+  assert.equal(moduleText.split(/\r?\n/).filter((line) => /type=cron,/.test(line)).length, 1);
+  assert.match(moduleText, /cronexp="0 7 \* \* \*"/);
+});
+
+test('passive panel refresh with configured accounts performs no account actions or pushes', async () => {
+  let calls = 0;
+  const env = await startManualTest(
+    { $input: { purpose: 'panel', panelName: 'Tizzy3_SignIn_Test' }, $trigger: 'auto-interval' },
+    { QX_SIGNIN_HASHIQI_COOKIE: 'fixture', QX_SIGNIN_IMYAI_JWT: 'fixture', QX_SIGNIN_KINGDEE_COOKIE: 'fixture', QX_SIGNIN_WECOM_WEBHOOK_URL: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fixture' },
+    { signHashiqi: async () => { calls += 1; }, signImyai: async () => { calls += 1; }, signKingdee: async () => { calls += 1; } },
+  );
+  assert.equal(calls, 0);
+  assert.equal(env.notifications.length, 0);
+  assert.equal(env.completions.length, 1);
+  assert.match(env.completions[0].content, /刷新/);
+  assert.equal(env.completions[0].style, 'info');
+});
+
+test('panel invocation without a button trigger never starts sign-in', async () => {
+  let calls = 0;
+  const env = await startManualTest(
+    { $input: { purpose: 'panel' } }, {},
+    { signHashiqi: async () => { calls += 1; } },
+  );
+  assert.equal(calls, 0);
+  assert.equal(env.completions.length, 1);
+  assert.equal(env.completions[0].style, 'info');
+});
+
+test('manual panel button reports missing credentials rather than implying connectivity success', async () => {
+  const env = await startManualTest({ $input: { purpose: 'panel' }, $trigger: 'button' }, {});
+  assert.equal(env.completions.length, 1);
+  const panel = env.completions[0];
+  assert.match(panel.title, /每日签到/);
+  assert.match(panel.content, /哈士奇/);
+  assert.match(panel.content, /IMYAI/);
+  assert.match(panel.content, /金蝶/);
+  assert.match(panel.content, /未配置/);
+  assert.equal(panel.style, 'info');
+  assert.equal(env.notifications.length, 1);
+});
+
+test('manual panel button executes all sites once and returns their results', async () => {
+  const calls = [];
+  const env = await startManualTest(
+    { $input: { purpose: 'panel' }, $trigger: 'button' }, {},
+    {
+      signHashiqi: async () => { calls.push('hashiqi'); return { title: '哈士奇', status: '成功', reward: '+10' }; },
+      signImyai: async () => { calls.push('imyai'); return { title: 'IMYAI', status: '已签到' }; },
+      signKingdee: async () => { calls.push('kingdee'); return { title: '金蝶', status: '已签到' }; },
+    },
+  );
+  assert.deepEqual(calls, ['hashiqi', 'imyai', 'kingdee']);
+  assert.equal(env.completions.length, 1);
+  assert.match(env.completions[0].content, /哈士奇/);
+  assert.equal(env.completions[0].style, 'good');
+});
+
+test('manual panel failure displays the error and still completes once', async () => {
+  const env = await startManualTest(
+    { $input: { purpose: 'panel' }, $trigger: 'button' }, {},
+    { signHashiqi: async () => { throw new Error('fixture account expired'); } },
+  );
+  assert.equal(env.completions.length, 1);
+  assert.equal(env.completions[0].style, 'error');
+  assert.match(env.completions[0].content, /fixture account expired/);
+});
+
+test('manual generic invocation without a panel preserves normal runner completion', async () => {
+  const env = await startManualTest({ $trigger: 'intent' }, {});
+  assert.equal(env.completions.length, 1);
+  assert.equal(JSON.stringify(env.completions[0]), '{}');
+  assert.equal(env.notifications.length, 1);
 });
