@@ -1,6 +1,6 @@
 # WPS 每日签到
 
-将原本的 Surge 本地模块托管为远程模块。保留原 MITM 域名、Cookie 捕获规则和上游脚本，定时任务调整为每天设备本地时间 10:00，签到任务超时仍为 120 秒。策略组页面新增手动测试面板；不复制或修改上游脚本。
+将原本的 Surge 本地模块托管为远程模块。保留原 MITM 域名、Cookie 捕获规则和上游脚本，定时任务调整为每天设备本地时间 10:00，签到任务超时仍为 120 秒。策略组页面新增手动测试面板；手动入口加载同一上游脚本并显示它的任务汇总，不修改上游任务逻辑。
 
 ## 安装
 
@@ -25,16 +25,16 @@ https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/WPS.sgmodule
 
 1. 更新并启用本模块，打开 Surge 的策略组选择页面。
 2. 找到「**WPS · 手动测试**」面板，点击它右上角的刷新按钮。
-3. 面板通过 Surge 官方 `$httpAPI` 调用 `/v1/scripting/cron/evaluate`，只调用一次本模块中的 `WPS签到` 任务；不需要自行配置 HTTP API 监听端口或密钥。
-4. 查看 WPS 原脚本的「WPS 任务汇总」通知及 `WPS签到` 脚本日志。面板只报告执行接口返回情况，不把接口返回当成各业务任务签到成功。
+3. 面板下载原作者的 `wps.js`，直接运行一次，并将它的通知内容显示为「WPS · 任务结果」。系统 WPS 通知也会保留。
+4. 手动运行的日志属于 `WPS_Manual_Test`；每天 10:00 自动运行的日志属于 `WPS签到`。请以面板、通知中各项任务的真实结果为准。
 
-仅打开策略组页面、自动刷新面板或缺少 Cookie 时，不会执行 WPS 任务。请等待当前执行完成后再点击。手动入口超时为 150 秒，给原本 120 秒的签到任务留出接口调用时间。信息面板需要 Surge 对应的功能授权。
+仅打开策略组页面、自动刷新面板或缺少 Cookie 时，不会执行 WPS 任务。请等待当前执行完成后再点击。手动入口使用 WebView 引擎，总超时为 150 秒，面板在 140 秒未结束时显示超时；原脚本下载失败或执行结果不明时，面板不会自动重跑。上游脚本自带的请求重试逻辑保持原样。信息面板需要 Surge 对应的功能授权。
 
 此面板使用本仓库的 `wps.panel.js`，签到和 Cookie 捕获仍由原作者脚本负责。设备本地凭证键 `wps_sid` 保持不变。
 
 自动任务安排在每天 10:00，以配合上游福利活动的开放时间；上游任务逻辑和任务开关保持原样。
 
-接口依据：[官方信息面板](https://manual.nssurge.com/tools/panel.html)、[官方定时脚本执行接口](https://manual.nssurge.com/tools/http-api.html)、[脚本内调用 HTTP API](https://manual.nssurge.com/scripting/api.html)。
+旧入口只检查定时执行接口的回调，空回调无法说明业务结果。当前入口不依赖该接口，而是等待原脚本 `$done`，收集它通过 `$notification.post` 发出的实际结果。面板行为依据：[官方信息面板](https://manual.nssurge.com/tools/panel.html)、[Surge 脚本 API](https://manual.nssurge.com/scripting/api.html)。
 
 ## 本地检查
 
@@ -43,7 +43,9 @@ node --check wps/wps.panel.js
 node --test wps/tests/wps-panel.test.cjs
 ```
 
-测试使用模拟 Surge API，不会发起真实签到、抽奖或账号请求。
+测试使用模拟 Surge HTTP、通知和存储，不会发起真实签到、抽奖或账号请求。
+
+可将上述原作者脚本下载至本地后设置 `WPS_UPSTREAM_FIXTURE` 为其绝对路径，再运行测试。额外三个集成用例使用未修改的原脚本，模拟「已签到」「Cookie 失效」「任务全部关闭」的响应，验证原脚本通知可显示在面板；未设置时会明确跳过这三个用例。它们不等同于 Surge 手机实测。
 
 ## 上游与范围
 
