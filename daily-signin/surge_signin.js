@@ -7,7 +7,7 @@
  * - Kingdee VIP check-in + lottery with existing cookies.
  * - Optional WeCom markdown report push.
  *
- * Install DailySignIn.sgmodule from https://github.com/Tizzy-3/Surge.
+ * Install daily-signin/DailySignIn.sgmodule from https://github.com/Tizzy-3/Surge.
  * Adapted from Tizzy-3/quantumultX; QX_SIGNIN_ keys are retained for BoxJS import.
  */
 

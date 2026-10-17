@@ -3,10 +3,10 @@
   "name": "Tizzy3 Surge 脚本订阅",
   "author": "Tizzy3",
   "repo": "https://github.com/Tizzy-3/Surge",
-  "icon": "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/patrick.png",
+  "icon": "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/patrick.png",
   "icons": [
-    "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/patrick.png",
-    "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/patrick.png"
+    "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/patrick.png",
+    "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/patrick.png"
   ],
   "apps": [
     {
@@ -15,10 +15,10 @@
       "desc": "哈士奇 / IMYAI / 金蝶云社区自动签到配置（Surge iOS 5.9+）",
       "author": "Tizzy3",
       "repo": "https://github.com/Tizzy-3/Surge",
-      "icon": "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/To-do.png",
+      "icon": "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/To-do.png",
       "icons": [
-        "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/To-do.png",
-        "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/To-do.png"
+        "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/To-do.png",
+        "https://raw.githubusercontent.com/Tizzy-3/Surge/refs/heads/main/daily-signin/To-do.png"
       ],
       "keys": [
         "QX_SIGNIN_HASHIQI_COOKIE",

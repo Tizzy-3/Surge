@@ -6,6 +6,7 @@ const { webcrypto } = require('node:crypto');
 const { test } = require('node:test');
 
 const root = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(root, '..');
 const runner = fs.readFileSync(path.join(root, 'surge_signin.js'), 'utf8');
 const capture = fs.readFileSync(path.join(root, 'surge_cookie_capture.js'), 'utf8');
 const functionsOnly = runner.replace(/^main\(\)\r?\n[\s\S]*?(?=async function main\()/m, '');
@@ -226,7 +227,7 @@ test('module uses bounded capture, appends hosts, and references existing resour
   assert.equal(scriptSection(example), scriptSection(moduleText).replace('hostname = %APPEND% ', 'hostname = '));
   for (const text of [moduleText, example, fs.readFileSync(path.join(root, 'boxjs.json'), 'utf8')]) {
     for (const match of text.matchAll(/https:\/\/raw\.githubusercontent\.com\/Tizzy-3\/Surge\/(?:refs\/heads\/)?main\/([^\s",]+)/g)) {
-      assert.ok(fs.existsSync(path.join(root, match[1].split(/[?#]/)[0])), `missing resource ${match[1]}`);
+      assert.ok(fs.existsSync(path.join(repoRoot, match[1].split(/[?#]/)[0])), `missing resource ${match[1]}`);
     }
   }
 });
