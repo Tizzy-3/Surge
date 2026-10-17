@@ -1,0 +1,1697 @@
+/*
+ * Surge 5 daily sign-in runner (Surge iOS 5.9+ / WebView engine).
+ *
+ * Tasks:
+ * - Hashiqi mobile check-in with username/password.
+ * - IMYAI check-in with JWT and encrypted request payload.
+ * - Kingdee VIP check-in + lottery with existing cookies.
+ * - Optional WeCom markdown report push.
+ *
+ * Install DailySignIn.sgmodule from https://github.com/Tizzy-3/Surge.
+ * Adapted from Tizzy-3/quantumultX; QX_SIGNIN_ keys are retained for BoxJS import.
+ */
+
+const USER_CONFIG = {
+  HASHIQI_COOKIE: "",
+  HASHIQI_USERNAME: "",
+  HASHIQI_PASSWORD: "",
+  IMYAI_JWT: "",
+  KINGDEE_COOKIE: "",
+  KINGDEE_CSRF_TOKEN: "",
+  WECOM_WEBHOOK_URL: "",
+  IMYAI_AES_KEY_B64: "iIADhhgDKPZfqgULT1eDJCkpzGSVs8dtP2RVVpxKV5g=",
+  IMYAI_HMAC_KEY_B64: "45fgZZoJMaNqJnlq1q+B999pHH3d92snBEzsMfi2FMyfrwoWqS9x7nYezRj3SnIxTrtmkBYIKfWJQSNJw6StgA==",
+  DEBUG: "false",
+  REQUEST_TIMEOUT_MS: "10000",
+  REQUEST_RETRIES: "2",
+
+  // Leave this enabled unless your Surge runtime already provides CryptoJS.
+  CRYPTOJS_URL: "https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js",
+  // pako (zlib in JS) is required to decode IMYAI slider-captcha PNG images.
+  PAKO_URL: "https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js",
+  KINGDEE_PRODUCT_LINE_ID: "1",
+};
+
+const HASHIQI_BASE = "https://www.haxiaohaios2.com/aspx3/mobile";
+const HASHIQI_SITE = "https://www.haxiaohaios2.com";
+const IMYAI_API_BASE = "https://api.daka.today/api";
+const KINGDEE_VIP_BASE = "https://vip.kingdee.com";
+const IMYAI_DEFAULT_REWARD = "基础+100 / 高级+5 / 绘画+5 / 智能体+10";
+
+const state = {
+  cookieJars: {
+    hashiqi: {},
+  },
+  lines: [],
+};
+
+const STEP_TITLES = {
+  hashiqi: "🐶 哈士奇签到",
+  imyai: "🤖 IMYAI签到",
+  kingdee: "🌐 金蝶云社区签到",
+  runner: "运行器",
+};
+
+main()
+  .then(async () => {
+    const report = buildReport(state.lines);
+    await pushWeCom(report);
+    notify(`每日签到报告 ${todayString()}`, "签到完成", buildNotificationBody(state.lines));
+    done();
+  })
+  .catch(async (error) => {
+    const message = error && error.stack ? error.stack : String(error);
+    state.lines.push({ id: "runner", title: "运行器", status: "失败", error: message });
+    const report = buildReport(state.lines);
+    await pushWeCom(report);
+    notify(`每日签到报告 ${todayString()}`, "运行失败", buildNotificationBody(state.lines));
+    done();
+  });
+
+async function main() {
+  validateConfig();
+  await runStep("hashiqi", signHashiqi);
+  await runStep("imyai", signImyai);
+  await runStep("kingdee", signKingdee);
+}
+
+async function runStep(name, fn) {
+  try {
+    const result = await fn();
+    state.lines.push(Object.assign({ id: name }, result));
+  } catch (error) {
+    state.lines.push({
+      id: name,
+      title: STEP_TITLES[name] || name,
+      status: "失败",
+      error: describeError(error),
+    });
+  }
+}
+
+async function signHashiqi() {
+  const savedCookie = config("HASHIQI_COOKIE");
+  const username = config("HASHIQI_USERNAME");
+  const password = config("HASHIQI_PASSWORD");
+  const loginUrl = `${HASHIQI_BASE}/login.aspx`;
+  if (savedCookie) {
+    state.cookieJars.hashiqi = parseCookieString(savedCookie);
+  } else if (!username || !password) {
+    return skipped("🐶 哈士奇签到", "未获取 HASHIQI_COOKIE，也未配置账号密码");
+  }
+
+  if (!savedCookie) {
+    await loginHashiqi(loginUrl, username, password);
+  }
+
+  const qiandaoUrl = `${HASHIQI_BASE}/qiandao.aspx`;
+
+  // 1) 先访问签到页确认会话和站点状态。
+  // 未登录时 Honor.ashx 可能返回 GenericErrorPage，不能据此判断“未签到”。
+  let qiandao = null;
+  try {
+    qiandao = await request({
+      url: qiandaoUrl,
+      method: "GET",
+      jar: state.cookieJars.hashiqi,
+      headers: { Referer: loginUrl },
+    });
+  } catch (error) {
+    if (isRedirectLoopError(error) && savedCookie && username && password) {
+      warnLog("Hashiqi saved cookie caused redirect loop, retrying with username/password login");
+      state.cookieJars.hashiqi = {};
+      setPref("QX_SIGNIN_HASHIQI_COOKIE", "");
+      await loginHashiqi(loginUrl, username, password);
+      qiandao = await request({
+        url: qiandaoUrl,
+        method: "GET",
+        jar: state.cookieJars.hashiqi,
+        headers: { Referer: loginUrl },
+      });
+    } else if (isRedirectLoopError(error)) {
+      setPref("QX_SIGNIN_HASHIQI_COOKIE", "");
+      throw new Error("哈士奇 Cookie 失效：访问签到页发生重定向循环，请重新打开网页登录以获取 Cookie");
+    } else {
+      throw error;
+    }
+  }
+  assertHashiqiAuthenticatedPage(qiandao.body);
+  if (/GenericErrorPage\.htm|Server Error|应用程序中的服务器错误/i.test(String(qiandao.body || ""))) {
+    throw new Error("哈士奇签到页返回服务器错误：网站端 qiandao.aspx 当前异常");
+  }
+  if (/维护|升级中|预计恢复时间|weihu|zz-main/i.test(String(qiandao.body || ""))) {
+    throw new Error("哈士奇签到页提示网站维护升级中，请稍后再试");
+  }
+
+  // Cookie 过期时 qiandao.aspx 返回 302 "Object moved" 页面，不含 VIEWSTATE 也不含登录表单。
+  // 检测这种情况并尝试用账号密码重新登录。
+  if (isHashiqiRedirectPage(qiandao.body) && username && password) {
+    warnLog("Hashiqi qiandao page returned redirect stub, cookie likely expired, re-login");
+    state.cookieJars.hashiqi = {};
+    setPref("QX_SIGNIN_HASHIQI_COOKIE", "");
+    await loginHashiqi(loginUrl, username, password);
+    qiandao = await request({
+      url: qiandaoUrl,
+      method: "GET",
+      jar: state.cookieJars.hashiqi,
+      headers: { Referer: loginUrl },
+    });
+    assertHashiqiAuthenticatedPage(qiandao.body);
+    if (isHashiqiRedirectPage(qiandao.body)) {
+      throw new Error("哈士奇重新登录后签到页仍返回重定向，请检查账号密码");
+    }
+  } else if (isHashiqiRedirectPage(qiandao.body)) {
+    setPref("QX_SIGNIN_HASHIQI_COOKIE", "");
+    throw new Error("哈士奇 Cookie 已过期：签到页返回重定向，请重新获取 Cookie 或配置账号密码");
+  }
+
+  // 2) 页面可用后，再从 Honor.ashx 读取服务端真实签到状态。
+  let honor = null;
+  let honorError = null;
+  try {
+    honor = await requestHashiqiHonor(qiandaoUrl);
+  } catch (error) {
+    honorError = error;
+    warnLog(`Hashiqi initial honor query failed: ${describeError(error)}`);
+  }
+  const signedBefore = isHashiqiSignedToday(honor);
+  let signed = signedBefore;
+  let reward = "";
+  let postReward = "";
+  let lastSignError = null;
+
+  if (!signedBefore) {
+
+    // 3) 未签到时提交签到表单，并用 Honor.ashx 验证结果。
+
+    const qdViewstate = extractHiddenField(qiandao.body, "__VIEWSTATE");
+    const qdGenerator = extractHiddenField(qiandao.body, "__VIEWSTATEGENERATOR");
+    if (!qdViewstate || !qdGenerator) {
+      // 新版页面可能不再输出 VIEWSTATE。先输出诊断，再尝试直接 postback。
+      const pageHint = String(qiandao.body || "").replace(/\s+/g, " ").trim().slice(0, 300);
+      warnLog(`Hashiqi qiandao page missing VIEWSTATE. status=${qiandao.statusCode || qiandao.status || "?"} head=${pageHint}`);
+      let fallbackSigned = false;
+      let fallbackReward = "";
+      try {
+        const fallback = await request({
+          url: qiandaoUrl,
+          method: "POST",
+          jar: state.cookieJars.hashiqi,
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "XMLHttpRequest",
+            Referer: qiandaoUrl,
+          },
+          body: formEncode({
+            __EVENTTARGET: "_lbtqd",
+            __EVENTARGUMENT: "",
+          }),
+        });
+        fallbackReward = extractHashiqiReward(fallback.body);
+        const fallbackHonor = await requestHashiqiHonor(qiandaoUrl);
+        fallbackSigned = isHashiqiSignedToday(fallbackHonor);
+        if (fallbackSigned) {
+          reward = extractHashiqiHonorReward(fallbackHonor) || fallbackReward || reward;
+        }
+      } catch (error) {
+        warnLog(`Hashiqi VIEWSTATE fallback failed: ${describeError(error)}`);
+      }
+      if (fallbackSigned || numberFromText(fallbackReward) > 0) {
+        signed = true;
+        postReward = fallbackReward;
+        lastSignError = null;
+      } else {
+        throw new Error(`哈士奇签到页面解析失败：未找到 VIEWSTATE 字段（页面片段：${pageHint}），网站可能已改版`);
+      }
+    }
+
+    const signResult = await request({
+      url: qiandaoUrl,
+      method: "POST",
+      jar: state.cookieJars.hashiqi,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Requested-With": "XMLHttpRequest",
+        Referer: qiandaoUrl,
+      },
+      body: formEncode({
+        __VIEWSTATE: qdViewstate,
+        __VIEWSTATEGENERATOR: qdGenerator,
+        __EVENTTARGET: "_lbtqd",
+        __EVENTARGUMENT: "",
+      }),
+    });
+    postReward = extractHashiqiReward(signResult.body);
+    reward = postReward || reward;
+
+    // 4) POST 完再调一次 Honor.ashx，验证服务端是否真的更新了状态
+    try {
+      const afterHonor = await requestHashiqiHonor(qiandaoUrl);
+      signed = isHashiqiSignedToday(afterHonor);
+      if (signed) {
+        reward = extractHashiqiHonorReward(afterHonor) || reward;
+      } else {
+        lastSignError = "POST 后 Honor.ashx 仍显示未签到，签到请求可能未生效（验证码/会话过期/参数错误）";
+      }
+    } catch (error) {
+      lastSignError = `POST 后验证失败：${describeError(error)}`;
+      warnLog(`Hashiqi post-sign honor verification failed: ${lastSignError}`);
+    }
+  } else {
+    // 已签到，从首次 honor 拿奖励
+    reward = extractHashiqiHonorReward(honor) || reward;
+  }
+
+  if (!honor && honorError && !signed) {
+    lastSignError = lastSignError || `哈士奇签到状态接口异常：${describeError(honorError)}`;
+  }
+
+  const userCenter = await request({
+    url: `${HASHIQI_BASE}/usercenter.aspx?action=index`,
+    method: "GET",
+    jar: state.cookieJars.hashiqi,
+    headers: { Referer: qiandaoUrl },
+  });
+  const total = match(userCenter.body, /balance-amount[^>]*>\s*([\d,]+)/i) ||
+    match(userCenter.body, />(\d[\d,]*)\s*狗粮/);
+  reward = reward || extractHashiqiReward(userCenter.body);
+  const previousTotal = numberFromText(pref("QX_SIGNIN_HASHIQI_LAST_TOTAL"));
+  const currentTotal = numberFromText(total);
+  if (!signed && !signedBefore && currentTotal !== null && numberFromText(postReward) > 0) {
+    // POST 已返回本次奖励且用户中心可读，说明奖励已入账；Honor 可能仍有缓存。
+    signed = true;
+    lastSignError = null;
+  }
+  if (currentTotal !== null && previousTotal !== null && currentTotal > previousTotal) {
+    const increasedBy = currentTotal - previousTotal;
+    if (!reward) {
+      reward = String(increasedBy);
+    }
+    // 新站点可能先入账狗粮，再延迟更新 Honor.ashx。
+    // 余额确实增加时，用服务端余额变化作为签到成功兜底。
+    if (!signed && !signedBefore && numberFromText(reward) > 0) {
+      signed = true;
+      lastSignError = null;
+    }
+  }
+  if (total) {
+    setPref("QX_SIGNIN_HASHIQI_LAST_TOTAL", String(numberFromText(total) || total));
+  }
+  if (reward && reward !== "未知") {
+    setPref("QX_SIGNIN_HASHIQI_LAST_REWARD", reward);
+    setPref("QX_SIGNIN_HASHIQI_LAST_REWARD_DATE", todayString());
+  } else if (pref("QX_SIGNIN_HASHIQI_LAST_REWARD_DATE") === todayString()) {
+    reward = pref("QX_SIGNIN_HASHIQI_LAST_REWARD") || reward;
+  }
+  reward = reward || "未知";
+
+  return {
+    title: "🐶 哈士奇签到",
+    status: signed ? "成功" : (lastSignError ? "失败" : "未签到"),
+    reward: reward === "未知" ? "未知" : `+${reward}`,
+    total: total || "未知",
+    error: signed ? "" : lastSignError,
+  };
+}
+
+async function signImyai() {
+  const jwt = config("IMYAI_JWT");
+  if (!jwt) {
+    return skipped("🤖 IMYAI签到", "未获取 IMYAI_JWT，请重新登录 IMYAI");
+  }
+  if (!config("IMYAI_AES_KEY_B64") || !config("IMYAI_HMAC_KEY_B64")) {
+    return skipped("🤖 IMYAI签到", "未配置 IMYAI_AES_KEY_B64 / IMYAI_HMAC_KEY_B64");
+  }
+  await ensureCryptoJS();
+
+  const headers = {
+    "User-Agent": userAgent(),
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${jwt}`,
+    Cookie: `CROSS_DOMAIN_JWT=${jwt}`,
+    Origin: "https://super.imyaigc.com",
+    Referer: "https://super.imyaigc.com/",
+  };
+
+  let before = null;
+  let signedBefore = false;
+  let consecutiveDays = 0;
+  let todayReward = "";
+  // 2026-09 接口改名：/auth/getInfo -> /auth/get-info
+  try {
+    const info = await requestJson({ url: `${IMYAI_API_BASE}/auth/get-info`, method: "GET", headers });
+    before = info && info.data ? info.data : null;
+    consecutiveDays = before && before.userInfo ? valueOf(before.userInfo.consecutiveDays, 0) : 0;
+  } catch (error) {
+    warnLog(`IMYAI get-info failed: ${error.message || error}`);
+  }
+
+  // 2026-09 接口改名：/signin/signinLog -> /signin/signin-log
+  try {
+    const log = await requestJson({ url: `${IMYAI_API_BASE}/signin/signin-log`, method: "GET", headers });
+    const list = Array.isArray(log.data) ? log.data : [];
+    const latest = list.length ? list[list.length - 1] : null;
+    signedBefore = !!(latest && isTruthyFlag(latest.isSigned) && latest.signInDate === todayString());
+    todayReward = formatImyaiReward(latest) || todayReward;
+  } catch (error) {
+    warnLog(`IMYAI signin-log failed: ${error.message || error}`);
+  }
+
+  let signStatus = signedBefore ? "Already signed" : "Signed";
+  const beforeBalance = before && before.userBalance ? before.userBalance : {};
+  if (!signedBefore) {
+    // 2026-09 新增滑块验证码（captchaSliderEnable=1）：签到必须先过滑块拿 verificationToken。
+    let verificationToken = "";
+    let captchaError = "";
+    try {
+      verificationToken = await obtainImyaiVerificationToken(headers);
+    } catch (error) {
+      captchaError = describeError(error);
+      warnLog(`IMYAI slider captcha failed: ${captchaError}`);
+    }
+
+    const body = JSON.stringify(encryptImyaiPayload(
+      verificationToken ? { verificationToken } : {}
+    ));
+    try {
+      const signResult = await requestJson({
+        url: `${IMYAI_API_BASE}/signin/sign`,
+        method: "POST",
+        headers,
+        body,
+      });
+      const resultCode = Number(signResult.code);
+      const signedByCode = resultCode === 200 || signResult.success === true;
+      const alreadySignedByCode = resultCode === 400 && /已签|already|signed/i.test(signResult.message || "");
+      todayReward = formatImyaiReward(signResult) || todayReward;
+      if (!(signedByCode || alreadySignedByCode)) {
+        const msg = signResult.message || JSON.stringify(signResult).slice(0, 180);
+        if (/已签|already|signed/i.test(msg)) {
+          signStatus = "Already signed";
+        } else if (/验证|滑块|captcha/i.test(msg)) {
+          throw new Error(`需要滑块验证但未通过：${captchaError || msg}`);
+        } else {
+          throw new Error(msg);
+        }
+      } else if (alreadySignedByCode) {
+        signStatus = "Already signed";
+      }
+    } catch (error) {
+      if (/HTTP 401|登录已失效|UNAUTHORIZED/.test(String(error.message || error))) {
+        throw new Error("IMYAI JWT 已失效，请在手机浏览器登录 super.imyaigc.com 重新抓取 Token");
+      }
+      if (/已签|already|signed|400/.test(String(error))) {
+        signStatus = "Already signed";
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  let balance = beforeBalance;
+  try {
+    const after = await requestJson({ url: `${IMYAI_API_BASE}/auth/get-info`, method: "GET", headers });
+    balance = after && after.data && after.data.userBalance ? after.data.userBalance : balance;
+    consecutiveDays = after && after.data && after.data.userInfo ? valueOf(after.data.userInfo.consecutiveDays, consecutiveDays) : consecutiveDays;
+  } catch (error) {
+    warnLog(`IMYAI get-info after sign failed: ${error.message || error}`);
+  }
+
+  todayReward = todayReward || formatImyaiRewardDiff(beforeBalance, balance);
+  if (todayReward) {
+    setPref("QX_SIGNIN_IMYAI_LAST_REWARD", todayReward);
+    setPref("QX_SIGNIN_IMYAI_LAST_REWARD_DATE", todayString());
+  } else if (pref("QX_SIGNIN_IMYAI_LAST_REWARD_DATE") === todayString()) {
+    todayReward = pref("QX_SIGNIN_IMYAI_LAST_REWARD") || todayReward;
+  }
+  if (!todayReward && (signStatus === "Signed" || signStatus === "Already signed")) {
+    todayReward = IMYAI_DEFAULT_REWARD;
+  }
+
+  return {
+    title: `🤖 IMYAI签到（连续${consecutiveDays}天）`,
+    status: signStatus === "Signed" || signStatus === "Already signed" ? "已签到" : signStatus,
+    todayReward: todayReward || "未知",
+    points: formatImyaiPoints(balance),
+  };
+}
+
+async function signKingdee() {
+  const cookie = config("KINGDEE_COOKIE");
+  if (!cookie) {
+    return skipped("🌐 金蝶云社区签到", "未获取 KINGDEE_COOKIE，请重新登录金蝶云社区");
+  }
+  const jar = parseCookieString(cookie);
+  const csrf = config("KINGDEE_CSRF_TOKEN") || jar["V-CSRF-TOKEN"] || "";
+  const productLineId = config("KINGDEE_PRODUCT_LINE_ID") || "1";
+  const headers = {
+    "User-Agent": userAgent(),
+    "X-CSRF-TOKEN": csrf || "",
+    "V-CSRF-TOKEN": csrf || "",
+    "X-Requested-With": "XMLHttpRequest",
+    Referer: `${KINGDEE_VIP_BASE}/`,
+    Origin: KINGDEE_VIP_BASE,
+    currentProductLineId: productLineId,
+    "Content-Type": "application/json",
+  };
+
+  const month = `${KINGDEE_VIP_BASE}/api/checkins/months/${monthString()}`;
+  let coins = "unknown";
+  let days = "unknown";
+  try {
+    const monthResult = await requestJson({ url: month, method: "GET", headers, jar });
+    coins = valueOf(monthResult.currentCoins, coins);
+    days = valueOf(monthResult.consistentDays, days);
+  } catch (error) {
+    // Keep going; cookie may still be good enough for status.
+  }
+
+  let status = "Signed";
+  let todayCoins = 0;
+  try {
+    const check = await requestJson({ url: `${KINGDEE_VIP_BASE}/api/checkins/status`, method: "GET", headers, jar });
+    if (check.checkIn) {
+      status = "Already signed";
+      todayCoins = valueOf(check.coins, 0);
+    } else {
+      const sign = await requestJson({
+        url: `${KINGDEE_VIP_BASE}/api/checkins`,
+        method: "POST",
+        headers,
+        jar,
+        body: "{}",
+      });
+      if (sign.errorCode && sign.errorCode !== 409 && !/signed|已签/i.test(sign.message || "")) {
+        throw new Error(sign.message || JSON.stringify(sign).slice(0, 180));
+      }
+      todayCoins = valueOf(sign.coins, todayCoins);
+    }
+  } catch (error) {
+    if (/401/.test(String(error))) {
+      throw new Error("Kingdee cookie expired or unauthorized");
+    }
+    if (/409|signed|已签/i.test(String(error))) {
+      status = "Already signed";
+    } else {
+      throw error;
+    }
+  }
+
+  const lottery = await runKingdeeLottery(headers, jar);
+  try {
+    const monthResult = await requestJson({ url: month, method: "GET", headers, jar });
+    coins = valueOf(monthResult.currentCoins, coins);
+    days = valueOf(monthResult.consistentDays, days);
+  } catch (error) {
+    // Non-critical refresh.
+  }
+
+  const updatedCookie = cookieHeader(jar);
+  if (updatedCookie && updatedCookie !== cookie) {
+    setPref("QX_SIGNIN_KINGDEE_COOKIE", updatedCookie);
+  }
+
+  return {
+    title: `🌐 金蝶云社区签到（连续${days}天）`,
+    status: status === "Signed" || status === "Already signed" ? "已签到" : status,
+    todayCoins: `+${todayCoins}`,
+    lottery: formatKingdeeLottery(lottery),
+    totalCoins: coins,
+  };
+}
+
+async function findLatestKingdeeLotteryRecord(activityId, headers, jar, attempts) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (attempt > 1) {
+      await sleep(500 * attempt);
+    }
+    try {
+      const records = await requestJson({
+        url: `${KINGDEE_VIP_BASE}/activityapi/me/activities/${activityId}/lottery-draw-records?page=0&pageSize=5&_=${Date.now()}_${attempt}`,
+        method: "GET",
+        headers,
+        jar,
+      });
+      const list = Array.isArray(records.content) ? records.content : (Array.isArray(records.data) ? records.data : []);
+      const today = todayString();
+      const found = list.find((item) => timestampDate(item.createdAt || item.createTime || item.drawTime) === today);
+      if (found) {
+        return found;
+      }
+    } catch (error) {
+      // A delayed record is non-fatal; the caller will return a clear pending result.
+    }
+  }
+  return null;
+}
+async function runKingdeeLottery(headers, jar) {
+  try {
+    await request({
+      url: `${KINGDEE_VIP_BASE}/lottery/LuckyLottery?sid=sign`,
+      method: "GET",
+      headers,
+      jar,
+    });
+  } catch (error) {
+    // This page warms the activity session; continue if it fails.
+  }
+
+  try {
+    const activity = await requestJson({
+      url: `${KINGDEE_VIP_BASE}/activityapi/activities/code/sign`,
+      method: "GET",
+      headers,
+      jar,
+    });
+    if (activity.errorCode) {
+      return `activity failed: ${activity.message || activity.errorCode}`;
+    }
+
+    if (!activity.id) {
+      return "activity id missing";
+    }
+    const activityId = String(activity.id);
+    const prizes = Array.isArray(activity.prizes) ? activity.prizes : [];
+    const lotteryId = prizes.length ? String(prizes[0].prizePoolId || prizes[0].lotteryId || "") : "";
+    if (!lotteryId) {
+      return "no lottery id";
+    }
+
+    const maxDay = Number(activity.lotteryDrawMaxTimesDay || 1);
+    const times = await requestJson({
+      url: `${KINGDEE_VIP_BASE}/activityapi/me/activities/${activityId}/lottery/${lotteryId}/lottery-draw-times`,
+      method: "GET",
+      headers,
+      jar,
+    });
+    const drawnToday = Number(times.hasDrawnTimesDay || 0);
+    if (maxDay - drawnToday > 0) {
+      const draw = await requestJson({
+        url: `${KINGDEE_VIP_BASE}/activityapi/activities/${activityId}/lottery/${lotteryId}/draw`,
+        method: "POST",
+        headers,
+        jar,
+        body: JSON.stringify({ activityId, lotteryId }),
+      });
+      if (draw.errorCode) {
+        return `draw failed: ${draw.message || draw.errorCode}`;
+      }
+      let prize = draw.prize || (draw.data && draw.data.prize) || null;
+      let name = prize && (prize.name || prize.prizeName);
+      let coins = Number((prize && (prize.coins || prize.coin || prize.amount)) || draw.coins || draw.coin || draw.amount || (draw.data && (draw.data.coins || draw.data.coin || draw.data.amount)) || 0);
+      if (!name || !coins) {
+        const record = await findLatestKingdeeLotteryRecord(activityId, headers, jar, 4);
+        if (record) {
+          prize = record.prize || record.award || record;
+          name = name || (prize && (prize.name || prize.prizeName || prize.awardName || prize.title));
+          coins = coins || Number((prize && (prize.coins || prize.coin || prize.amount)) || record.coins || record.coin || record.amount || 0);
+        }
+      }
+      name = name || "抽奖结果待刷新";
+      return coins > 0 ? `${name} (+${coins})` : name;
+    }
+
+    const records = await requestJson({
+      url: `${KINGDEE_VIP_BASE}/activityapi/me/activities/${activityId}/lottery-draw-records?page=0&pageSize=5`,
+      method: "GET",
+      headers,
+      jar,
+    });
+    const today = todayString();
+    const list = Array.isArray(records.content) ? records.content : [];
+    const found = list.find((item) => timestampDate(item.createdAt) === today);
+    if (!found) {
+      return "already drawn";
+    }
+    const prize = found.prize || {};
+    const name = prize.name || "unknown prize";
+    const coins = Number(prize.coins || 0);
+    return coins > 0 ? `already drew ${name} (+${coins})` : `already drew ${name}`;
+  } catch (error) {
+    return `error: ${error.message || String(error)}`;
+  }
+}
+
+async function pushWeCom(markdown) {
+  const webhook = config("WECOM_WEBHOOK_URL");
+  if (!webhook) {
+    return;
+  }
+  try {
+    await request({
+      url: webhook,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        msgtype: "markdown",
+        markdown: { content: markdown },
+      }),
+    });
+  } catch (error) {
+    notify("Daily Sign-in", "WeCom push failed", error.message || String(error));
+  }
+}
+
+function buildReport(lines) {
+  const date = todayString();
+  return [`## 每日签到报告 ${date}`, ""]
+    .concat(lines.map(formatMarkdownReportItem))
+    .join("\n");
+}
+
+function buildNotificationBody(lines) {
+  return lines.map(formatReportItem).join("\n");
+}
+
+function formatReportItem(item) {
+  if (item.id === "hashiqi") {
+    return [
+      item.title || "🐶 哈士奇签到",
+      `状态：${item.status || "未知"}`,
+      `获得狗粮：${item.reward || "未知"}`,
+      `狗粮总数：${item.total || "未知"}`,
+      item.error ? `错误：${item.error}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  if (item.id === "imyai") {
+    return [
+      item.title || "🤖 IMYAI签到",
+      `状态：${item.status || "未知"}`,
+      `今日获得：${item.todayReward || "未知"}`,
+      `当前积分：${item.points || "未知"}`,
+      item.error ? `错误：${item.error}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  if (item.id === "kingdee") {
+    return [
+      item.title || "🌐 金蝶云社区签到",
+      `状态：${item.status || "未知"}`,
+      `今日获得：${item.todayCoins || "未知"} 金币`,
+      `抽奖获得：${item.lottery || "未知"}`,
+      `当前金币：${item.totalCoins || "未知"}`,
+      item.error ? `错误：${item.error}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  return [
+    item.title || item.id || "任务",
+    `状态：${item.status || "未知"}`,
+    item.error || item.detail || "",
+  ].filter(Boolean).join("\n");
+}
+
+function formatMarkdownReportItem(item) {
+  const parts = formatReportItem(item).split("\n").filter(Boolean);
+  const title = parts.shift() || item.title || item.id || "任务";
+  const detail = parts.map((line) => {
+    const status = /^状态：(.+)$/.exec(line);
+    if (status) {
+      return `> 状态：${statusIcon(status[1])} **${status[1]}**`;
+    }
+    const pair = /^([^：]+)：(.+)$/.exec(line);
+    if (pair) {
+      return `> ${pair[1]}：**${pair[2]}**`;
+    }
+    return `> ${line}`;
+  });
+  return [`### ${title}`].concat(detail).join("\n");
+}
+
+function statusIcon(status) {
+  if (/成功|已签到|已签/.test(String(status))) {
+    return "✅";
+  }
+  if (/失败|异常|错误|过期|解析失败/.test(String(status))) {
+    return "❌";
+  }
+  return "⚠️";
+}
+
+function formatKingdeeLottery(lotteryText) {
+  const text = String(lotteryText || "");
+  const coins = match(text, /\(\+(\d+)\)/) || match(text, /\+(\d+)/) || match(text, /(\d+)\s*金币/);
+  if (coins) {
+    return `+${coins} 金币`;
+  }
+  if (/already drawn|今日已抽|已抽/.test(text)) {
+    return "今日已抽奖";
+  }
+  if (/error|异常|failed|失败/i.test(text)) {
+    return "抽奖异常";
+  }
+  return text || "未知";
+}
+
+async function ensureCryptoJS() {
+  if (typeof CryptoJS !== "undefined") {
+    return;
+  }
+  const url = config("CRYPTOJS_URL");
+  const cacheKey = `QX_SIGNIN_CRYPTOJS_CACHE_${simpleHash(url)}`;
+  const cached = pref(cacheKey);
+  if (cached) {
+    try {
+      globalEval(cached);
+      if (typeof CryptoJS !== "undefined") {
+        return;
+      }
+    } catch (error) {
+      warnLog(`CryptoJS cache invalid: ${error.message || error}`);
+    }
+    setPref(cacheKey, "");
+  }
+  if (!url) {
+    throw new Error("CryptoJS is required for IMYAI encryption");
+  }
+  const response = await request({ url, method: "GET" });
+  if (!response.body || response.body.length < 1000) {
+    throw new Error("failed to load CryptoJS");
+  }
+  setPref(cacheKey, response.body);
+  globalEval(response.body);
+  if (typeof CryptoJS === "undefined") {
+    throw new Error("CryptoJS loaded but global CryptoJS was not found");
+  }
+}
+
+function encryptImyaiPayload(data) {
+  const aesKey = CryptoJS.enc.Base64.parse(config("IMYAI_AES_KEY_B64"));
+  const hmacKey = CryptoJS.enc.Base64.parse(config("IMYAI_HMAC_KEY_B64"));
+  const iv = CryptoJS.lib.WordArray.random(16);
+  const plaintext = CryptoJS.enc.Utf8.parse(JSON.stringify(data));
+  const encrypted = CryptoJS.AES.encrypt(plaintext, aesKey, {
+    iv,
+    mode: CryptoJS.mode.CBC,
+    padding: CryptoJS.pad.Pkcs7,
+  });
+  const ivB64 = CryptoJS.enc.Base64.stringify(iv);
+  const payloadB64 = CryptoJS.enc.Base64.stringify(encrypted.ciphertext);
+  const timestamp = Date.now();
+  const signature = CryptoJS.HmacSHA256(`${ivB64}.${payloadB64}.${timestamp}`, hmacKey).toString(CryptoJS.enc.Hex);
+  return {
+    iv: ivB64,
+    payload: payloadB64,
+    signature,
+    timestamp,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// IMYAI slider captcha (added 2026-09: site now requires a block-puzzle captcha
+// before /signin/sign). Flow:
+//   POST /captcha/get  (encrypted) -> {token, bgImage, puzzleImage, puzzleY}
+//   detect hole x by matching the puzzle piece against the background
+//   POST /captcha/check (encrypted) {token, x} -> {verified, verificationToken}
+// ---------------------------------------------------------------------------
+
+async function ensurePako() {
+  if (typeof pako !== "undefined") {
+    return;
+  }
+  const url = config("PAKO_URL");
+  const cacheKey = `QX_SIGNIN_PAKO_CACHE_${simpleHash(url)}`;
+  const cached = pref(cacheKey);
+  if (cached) {
+    try {
+      globalEval(cached);
+      if (typeof pako !== "undefined") {
+        return;
+      }
+    } catch (error) {
+      warnLog(`pako cache invalid: ${error.message || error}`);
+    }
+    setPref(cacheKey, "");
+  }
+  if (!url) {
+    throw new Error("pako is required for IMYAI slider captcha");
+  }
+  const response = await request({ url, method: "GET" });
+  if (!response.body || response.body.length < 1000) {
+    throw new Error("failed to load pako");
+  }
+  setPref(cacheKey, response.body);
+  globalEval(response.body);
+  if (typeof pako === "undefined") {
+    throw new Error("pako loaded but global pako was not found");
+  }
+}
+
+function base64ToBytes(value) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const clean = String(value || "").replace(/[^A-Za-z0-9+/]/g, "");
+  const len = clean.length;
+  const pad = len % 4 === 2 ? 2 : len % 4 === 3 ? 1 : 0;
+  const usable = pad ? clean.slice(0, len - pad) : clean;
+  const bytes = new Uint8Array(Math.floor(usable.length * 3 / 4) + pad);
+  let out = 0;
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < usable.length; i += 1) {
+    buffer = (buffer << 6) | chars.indexOf(usable.charAt(i));
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes[out++] = (buffer >> bits) & 0xff;
+    }
+  }
+  return bytes.subarray(0, out + pad);
+}
+
+function paethPredictor(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+}
+
+function readPngU32(bytes, offset) {
+  return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+}
+
+function decodePng(bytes) {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i += 1) {
+    if (u8[i] !== signature[i]) {
+      throw new Error("IMYAI captcha image is not a PNG");
+    }
+  }
+  let pos = 8;
+  let width = 0;
+  let height = 0;
+  let colorType = 0;
+  const idat = [];
+  while (pos + 8 <= u8.length) {
+    const length = readPngU32(u8, pos);
+    const type = String.fromCharCode(u8[pos + 4], u8[pos + 5], u8[pos + 6], u8[pos + 7]);
+    const dataStart = pos + 8;
+    if (type === "IHDR") {
+      width = readPngU32(u8, dataStart);
+      height = readPngU32(u8, dataStart + 4);
+      const bitDepth = u8[dataStart + 8];
+      colorType = u8[dataStart + 9];
+      const interlace = u8[dataStart + 12];
+      if (bitDepth !== 8 || interlace !== 0) {
+        throw new Error(`unsupported PNG (bitDepth=${bitDepth}, interlace=${interlace})`);
+      }
+    } else if (type === "IDAT") {
+      idat.push(u8.slice(dataStart, dataStart + length));
+    } else if (type === "IEND") {
+      break;
+    }
+    pos = dataStart + length + 4;
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 0 ? 1 : 0;
+  if (!channels) {
+    throw new Error(`unsupported PNG color type ${colorType}`);
+  }
+  let compressed = idat[0];
+  for (let i = 1; i < idat.length; i += 1) {
+    const merged = new Uint8Array(compressed.length + idat[i].length);
+    merged.set(compressed);
+    merged.set(idat[i], compressed.length);
+    compressed = merged;
+  }
+  const raw = pako.inflate(compressed);
+  const stride = width * channels;
+  const out = new Uint8Array(height * stride);
+  let prevRow = new Uint8Array(stride);
+  let rawPos = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[rawPos];
+    rawPos += 1;
+    const rowStart = y * stride;
+    for (let i = 0; i < stride; i += 1) {
+      const a = i >= channels ? out[rowStart + i - channels] : 0;
+      const b = prevRow[i];
+      const c = i >= channels ? prevRow[i - channels] : 0;
+      let value = raw[rawPos + i];
+      if (filter === 1) {
+        value = (value + a) & 0xff;
+      } else if (filter === 2) {
+        value = (value + b) & 0xff;
+      } else if (filter === 3) {
+        value = (value + ((a + b) >> 1)) & 0xff;
+      } else if (filter === 4) {
+        value = (value + paethPredictor(a, b, c)) & 0xff;
+      }
+      out[rowStart + i] = value & 0xff;
+    }
+    prevRow = out.subarray(rowStart, rowStart + stride);
+    rawPos += stride;
+  }
+  return { width, height, channels, data: out };
+}
+
+function pngToGray(png) {
+  const { width, height, channels, data } = png;
+  const gray = new Float64Array(width * height);
+  const alpha = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i += 1) {
+    const o = i * channels;
+    gray[i] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+    alpha[i] = channels === 4 ? data[o + 3] : 255;
+  }
+  return { gray, alpha, width, height };
+}
+
+// Locate the hole x-offset: slide the puzzle piece over the background at the
+// given y, score each position by normalized cross-correlation of horizontal
+// gradients (robust to the darkening overlay the server applies to the hole).
+function solveSliderHole(bgPng, puzzlePng, holeY) {
+  const bg = pngToGray(bgPng);
+  const pz = pngToGray(puzzlePng);
+  const W = bg.width;
+  const H = bg.height;
+  const pw = pz.width;
+  const ph = pz.height;
+  if (W < pw || H < ph) {
+    throw new Error(`captcha size mismatch bg=${W}x${H} piece=${pw}x${ph}`);
+  }
+  const maskIdx = [];
+  for (let y = 0; y < ph; y += 1) {
+    for (let x = 0; x < pw; x += 1) {
+      if (pz.alpha[y * pw + x] > 40) {
+        maskIdx.push(y * pw + x);
+      }
+    }
+  }
+  if (!maskIdx.length) {
+    throw new Error("puzzle piece is fully transparent");
+  }
+  const pieceGray = pz.gray;
+  const pieceDx = new Float64Array(pw * ph);
+  for (let i = 0; i < maskIdx.length; i += 1) {
+    const idx = maskIdx[i];
+    const x = idx % pw;
+    if (x + 1 < pw && pz.alpha[idx + 1] > 40) {
+      pieceDx[idx] = pieceGray[idx + 1] - pieceGray[idx];
+    }
+  }
+  const bgGray = bg.gray;
+  const bgDx = new Float64Array(W * H);
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 1; x < W; x += 1) {
+      bgDx[y * W + x] = bgGray[y * W + x] - bgGray[y * W + x - 1];
+    }
+  }
+  const y0 = Math.max(0, Math.min(Number(holeY) || 0, H - ph));
+  // Map each masked piece pixel to its background pixel (per candidate x:
+  // bg offset = (y0 + py) * W + x + px).
+  const maskBgBase = [];
+  for (let i = 0; i < maskIdx.length; i += 1) {
+    const idx = maskIdx[i];
+    maskBgBase.push((y0 + Math.floor(idx / pw)) * W + (idx % pw));
+  }
+  let bestX = 0;
+  let bestScore = -Infinity;
+  for (let x = 0; x + pw <= W; x += 1) {
+    let sumA = 0;
+    let sumB = 0;
+    for (let i = 0; i < maskIdx.length; i += 1) {
+      sumA += pieceDx[maskIdx[i]];
+      sumB += bgDx[maskBgBase[i] + x];
+    }
+    const meanA = sumA / maskIdx.length;
+    const meanB = sumB / maskIdx.length;
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < maskIdx.length; i += 1) {
+      const a = pieceDx[maskIdx[i]] - meanA;
+      const b = bgDx[maskBgBase[i] + x] - meanB;
+      dot += a * b;
+      normA += a * a;
+      normB += b * b;
+    }
+    const score = dot / (Math.sqrt(normA * normB) + 1e-9);
+    if (score > bestScore) {
+      bestScore = score;
+      bestX = x;
+    }
+  }
+  warnLog(`IMYAI slider hole: x=${bestX} y=${y0} score=${Number(bestScore).toFixed(3)}`);
+  return bestX;
+}
+
+async function obtainImyaiVerificationToken(headers) {
+  await ensurePako();
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (attempt > 1) {
+      await sleep(500 * attempt);
+    }
+    const cap = await requestJson({
+      url: `${IMYAI_API_BASE}/captcha/get`,
+      method: "POST",
+      headers,
+      body: JSON.stringify(encryptImyaiPayload({ captchaType: "blockPuzzle" })),
+    });
+    const data = cap && cap.data;
+    if (!data || !data.token || !data.bgImage || !data.puzzleImage) {
+      throw new Error(`captcha/get 响应异常: ${JSON.stringify(cap).slice(0, 180)}`);
+    }
+    const bgPng = decodePng(base64ToBytes(String(data.bgImage).split(",").pop()));
+    const puzzlePng = decodePng(base64ToBytes(String(data.puzzleImage).split(",").pop()));
+    const x = solveSliderHole(bgPng, puzzlePng, Number(data.puzzleY) || 0);
+    // Behave like a human dragging the slider.
+    await sleep(600 + Math.floor(Math.random() * 900));
+    const check = await requestJson({
+      url: `${IMYAI_API_BASE}/captcha/check`,
+      method: "POST",
+      headers,
+      body: JSON.stringify(encryptImyaiPayload({ token: data.token, x })),
+    });
+    const checkData = check && check.data;
+    if (checkData && checkData.verified && checkData.verificationToken) {
+      return checkData.verificationToken;
+    }
+    warnLog(`IMYAI captcha check attempt ${attempt} not verified (x=${x}): ${JSON.stringify(check).slice(0, 180)}`);
+  }
+  throw new Error("滑块验证 3 次尝试均未通过");
+}
+
+
+async function requestJson(options) {
+  const response = await request(options);
+  try {
+    return JSON.parse(response.body || "{}");
+  } catch (error) {
+    throw new Error(`invalid JSON from ${options.url}: ${(response.body || "").slice(0, 200)}`);
+  }
+}
+
+async function request(options) {
+  const opts = Object.assign({ method: "GET", headers: {} }, options);
+  opts.headers = Object.assign({ "User-Agent": userAgent() }, opts.headers || {});
+  if (opts.jar) {
+    const cookie = cookieHeader(opts.jar);
+    if (cookie) {
+      opts.headers.Cookie = cookie;
+    }
+  }
+  const shouldStoreCookies = opts.storeCookies !== false;
+  const fetchOptions = Object.assign({}, opts);
+  delete fetchOptions.jar;
+  delete fetchOptions.storeCookies;
+  fetchOptions.timeout = requestTimeoutMs() / 1000;
+  const maxAttempts = requestRetries() + 1;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      debugLog(`request attempt ${attempt}/${maxAttempts}: ${fetchOptions.method || "GET"} ${fetchOptions.url}`);
+      return await requestOnce(fetchOptions, opts.jar, shouldStoreCookies);
+    } catch (error) {
+      lastError = error;
+      warnLog(`request failed ${attempt}/${maxAttempts}: ${fetchOptions.url} ${describeError(error)}`);
+      if (attempt < maxAttempts) {
+        await sleep(350 * attempt);
+      }
+    }
+  }
+  throw lastError;
+}
+
+function requestOnce(fetchOptions, jar, shouldStoreCookies, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    const client = typeof $httpClient !== "undefined" ? $httpClient : null;
+    const method = String(fetchOptions.method || "GET").toLowerCase();
+    if (!client || typeof client[method] !== "function") {
+      reject(new Error(`Surge $httpClient.${method} is not available`));
+      return;
+    }
+    const options = Object.assign({}, fetchOptions);
+    delete options.method;
+    // Follow redirects explicitly so intermediate Set-Cookie values reach the next hop.
+    options.headers = Object.assign({}, options.headers || {});
+    if (jar) {
+      Object.keys(options.headers).forEach((key) => {
+        if (key.toLowerCase() === "cookie") delete options.headers[key];
+      });
+      const cookie = cookieHeader(jar);
+      if (cookie) options.headers.Cookie = cookie;
+    }
+    options["auto-cookie"] = false;
+    options["auto-redirect"] = false;
+    let settled = false;
+    client[method](options, (error, response, data) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        reject(new Error(String(error)));
+        return;
+      }
+      const headers = (response && response.headers) || {};
+      if (jar && shouldStoreCookies) {
+        storeCookies(jar, headers);
+      }
+      const status = Number(response && (response.status || response.statusCode) || 0);
+      const body = data == null ? "" : String(data);
+      const location = headerValue(headers, "location");
+      if ([301, 302, 303, 307, 308].includes(status) && location) {
+        if (redirectCount >= 10) {
+          reject(new Error(`Too many redirects from ${options.url}`));
+          return;
+        }
+        let target;
+        let sameOrigin;
+        try {
+          target = new URL(String(location), options.url);
+          sameOrigin = target.origin === new URL(options.url).origin;
+          if (!/^https?:$/.test(target.protocol)) throw new Error("Unsupported redirect protocol");
+        } catch (redirectError) {
+          reject(redirectError);
+          return;
+        }
+        const next = Object.assign({}, fetchOptions, { url: target.href, headers: Object.assign({}, options.headers) });
+        if (!sameOrigin) {
+          Object.keys(next.headers).forEach((key) => {
+            if (/^(cookie|authorization|proxy-authorization|x-csrf-token|v-csrf-token)$/i.test(key)) delete next.headers[key];
+          });
+        }
+        if ((status === 303 && method !== "head") || ([301, 302].includes(status) && method === "post")) {
+          next.method = "GET";
+          delete next.body;
+          Object.keys(next.headers).forEach((key) => {
+            if (/^content-(type|length)$/i.test(key)) delete next.headers[key];
+          });
+        }
+        resolve(requestOnce(next, sameOrigin ? jar : null, shouldStoreCookies, redirectCount + 1));
+        return;
+      }
+      if (status >= 400) {
+        reject(new Error(`HTTP ${status} from ${options.url}: ${body.slice(0, 240)}`));
+        return;
+      }
+      resolve({ status, statusCode: status, headers, body });
+    });
+  });
+}
+
+function storeCookies(jar, headers) {
+  const setCookie = headerValue(headers, "set-cookie");
+  if (!setCookie) {
+    return;
+  }
+  const entries = Array.isArray(setCookie) ? setCookie : splitSetCookie(String(setCookie));
+  entries.forEach((entry) => {
+    const first = String(entry).split(";")[0];
+    const index = first.indexOf("=");
+    if (index > 0) {
+      jar[first.slice(0, index).trim()] = first.slice(index + 1).trim();
+    }
+  });
+}
+
+function splitSetCookie(value) {
+  return value.split(/,(?=\s*[^;,=\s]+=[^;,]+)/g).map((x) => x.trim()).filter(Boolean);
+}
+
+function cookieHeader(jar) {
+  return Object.keys(jar).map((key) => `${key}=${jar[key]}`).join("; ");
+}
+
+function parseCookieString(cookie) {
+  const jar = {};
+  String(cookie || "").split(";").forEach((part) => {
+    const index = part.indexOf("=");
+    if (index > 0) {
+      const key = part.slice(0, index).trim();
+      const value = part.slice(index + 1).trim();
+      if (key) {
+        jar[key] = value;
+      }
+    }
+  });
+  return jar;
+}
+
+function headerValue(headers, name) {
+  const lower = name.toLowerCase();
+  for (const key in headers) {
+    if (key.toLowerCase() === lower) {
+      return headers[key];
+    }
+  }
+  return "";
+}
+
+function config(key) {
+  const fromPrefs = pref(`QX_SIGNIN_${key}`);
+  if (fromPrefs) {
+    return fromPrefs;
+  }
+  const legacyKey = legacyPrefKey(key);
+  if (legacyKey) {
+    const fromLegacyPrefs = pref(legacyKey);
+    if (fromLegacyPrefs) {
+      return fromLegacyPrefs;
+    }
+  }
+  return USER_CONFIG[key] || "";
+}
+
+function legacyPrefKey(key) {
+  const map = {
+    HASHIQI_COOKIE: "hashiqi_cookie",
+    IMYAI_JWT: "imyai_jwt",
+    KINGDEE_COOKIE: "kingdee_cookie",
+    KINGDEE_CSRF_TOKEN: "kingdee_csrf",
+    IMYAI_AES_KEY_B64: "imyai_aes_key_b64",
+    IMYAI_HMAC_KEY_B64: "imyai_hmac_key_b64",
+  };
+  return map[key] || "";
+}
+
+function pref(key) {
+  try {
+    if (typeof $persistentStore !== "undefined" && $persistentStore.read) {
+      return $persistentStore.read(key) || "";
+    }
+  } catch (error) {
+    return "";
+  }
+  return "";
+}
+
+function setPref(key, value) {
+  try {
+    if (typeof $persistentStore !== "undefined" && $persistentStore.write) {
+      return $persistentStore.write(String(value), key);
+    }
+  } catch (error) {
+    // Ignore cache write failures.
+  }
+  return false;
+}
+
+function formEncode(data) {
+  return Object.keys(data)
+    .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(data[key])}`)
+    .join("&");
+}
+
+function containsAny(text, needles) {
+  return needles.some((needle) => String(text || "").includes(needle));
+}
+
+function assertHashiqiLoginSuccess(response) {
+  const body = String((response && response.body) || "");
+  const location = headerValue((response && response.headers) || {}, "location");
+  if (/login\.aspx/i.test(location)) {
+    throw new Error("哈士奇登录失败：登录后仍跳转到登录页");
+  }
+  const failure = [
+    "密码错误",
+    "用户名不存在",
+    "账号不存在",
+    "登录失败",
+    "验证码",
+    "请输入验证码",
+    "账户被禁用",
+    "账号被封",
+    "user not found",
+    "password",
+    "captcha",
+  ].find((needle) => body.toLowerCase().includes(needle.toLowerCase()));
+  if (failure) {
+    throw new Error(`哈士奇登录失败：${failure}`);
+  }
+  if (/txtUser_sign_in|txtPwd_sign_in|btnLogin/i.test(body) && !/登录成功|success/i.test(body)) {
+    throw new Error("哈士奇登录失败：响应仍是登录表单");
+  }
+}
+
+function assertHashiqiAuthenticatedPage(body) {
+  const text = String(body || "");
+  if (/txtUser_sign_in|txtPwd_sign_in|btnLogin/i.test(text) && /login|登录/i.test(text)) {
+    throw new Error("哈士奇登录失败：未进入签到页，可能需要重新获取 Cookie 或处理验证码");
+  }
+}
+
+async function loginHashiqi(loginUrl, username, password) {
+  const loginPage = await request({
+    url: loginUrl,
+    method: "GET",
+    jar: state.cookieJars.hashiqi,
+  });
+  const viewstate = extractHiddenField(loginPage.body, "__VIEWSTATE");
+  const generator = extractHiddenField(loginPage.body, "__VIEWSTATEGENERATOR");
+  if (!viewstate || !generator) {
+    throw new Error("Hashiqi login page did not include VIEWSTATE fields");
+  }
+
+  const loginResult = await request({
+    url: loginUrl,
+    method: "POST",
+    jar: state.cookieJars.hashiqi,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: "https://www.haxiaohaios2.com",
+      Referer: loginUrl,
+    },
+    body: formEncode({
+      __VIEWSTATE: viewstate,
+      __VIEWSTATEGENERATOR: generator,
+      __EVENTTARGET: "btnLogin",
+      __EVENTARGUMENT: "",
+      txtUser_sign_in: username,
+      txtPwd_sign_in: password,
+    }),
+  });
+  assertHashiqiLoginSuccess(loginResult);
+  const loginCookie = cookieHeader(state.cookieJars.hashiqi);
+  if (loginCookie) {
+    setPref("QX_SIGNIN_HASHIQI_COOKIE", loginCookie);
+  }
+}
+
+async function requestHashiqiHonor(referer) {
+  return requestJson({
+    url: `${HASHIQI_SITE}/ashx/Honor.ashx`,
+    method: "POST",
+    jar: state.cookieJars.hashiqi,
+    storeCookies: false,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: HASHIQI_SITE,
+      Referer: referer,
+    },
+    body: formEncode({
+      control: "list2",
+      nowmonth: String(new Date().getMonth() + 1),
+    }),
+  });
+}
+
+function extractHashiqiHonorReward(data) {
+  if (!data || typeof data !== "object") {
+    return "";
+  }
+  const reward = numberFromText(data.addjifen);
+  return reward !== null && reward > 0 ? String(reward) : "";
+}
+
+function isHashiqiSignedToday(data) {
+  if (!data || typeof data !== "object") {
+    return false;
+  }
+  const flag = data.signedToday;
+  if (flag === true || flag === "True" || flag === "true" || flag === 1 || flag === "1") {
+    return true;
+  }
+  if (flag === false || flag === "False" || flag === "false" || flag === 0 || flag === "0") {
+    return false;
+  }
+  if (Array.isArray(data.signedDates)) {
+    for (const item of data.signedDates) {
+      const day = item && typeof item === "object" ? item.signDay : item;
+      if (String(day) === todayString()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function extractHashiqiReward(body) {
+  const text = String(body || "");
+  return match(text, /today-reward[^>]*>\s*\+?(\d+)\s*狗粮/i) ||
+    match(text, /(?:奖励|获得|领取)[^\d+]{0,30}\+?(\d+)\s*(?:狗粮|积分)?/i) ||
+    match(text, /\+(\d+)\s*狗粮/i) ||
+    match(text, /狗粮[^\d+]{0,30}\+?(\d+)/i);
+}
+
+function isTruthyFlag(value) {
+  if (value === true) {
+    return true;
+  }
+  if (typeof value === "number") {
+    return value === 1;
+  }
+  return /^(1|true|yes|signed|已签|已签到)$/i.test(String(value || "").trim());
+}
+
+function formatImyaiPoints(balance) {
+  const source = balance && typeof balance === "object" ? balance : {};
+  const base = firstNumberByKeys(source, ["sumBasicPoints", "basicPoints", "model3Count", "model3_count", "model3Balance", "basicCount", "baseCount", "basePoints"]);
+  const advanced = firstNumberByKeys(source, ["sumAdvancedPoints", "advancedPoints", "model4Count", "model4_count", "model4Balance", "advancedCount", "premiumCount", "advancedPoints"]);
+  const drawing = firstNumberByKeys(source, ["sumDrawingPoints", "drawingPoints", "drawMjCount", "draw_mj_count", "drawBalance", "drawingCount", "drawCount", "drawingPoints"]);
+  const agent = firstNumberByKeys(source, ["agentPoints", "sumAgentPoints"]);
+  const parts = [
+    `基础${base === null ? "未知" : base}`,
+    `高级${advanced === null ? "未知" : advanced}`,
+    `绘画${drawing === null ? "未知" : drawing}`,
+  ];
+  if (agent !== null) {
+    parts.push(`智能体${agent}`);
+  }
+  return parts.join(" / ");
+}
+function formatImyaiReward(result) {
+  if (!result) {
+    return "";
+  }
+  const rewardText = firstStringByKeys(result, ["todayReward", "rewardText", "rewardDesc", "reward", "rewards", "message"]);
+  if (rewardText && /(\+?\d+|积分|奖励|基础|高级|绘画)/.test(rewardText)) {
+    return rewardText;
+  }
+
+  const source = result.data && typeof result.data === "object" ? result.data : result;
+  const base = firstNumberByKeys(source, ["baseReward", "basicReward", "model3Reward", "model3Add", "model3AddCount", "model3Count", "points", "score"]);
+  const advanced = firstNumberByKeys(source, ["advancedReward", "model4Reward", "model4Add", "model4AddCount", "model4Count"]);
+  const drawing = firstNumberByKeys(source, ["drawReward", "drawingReward", "drawMjReward", "drawMjAdd", "drawMjAddCount", "drawMjCount"]);
+  const parts = [];
+  if (base !== null) {
+    parts.push(`基础+${base}`);
+  }
+  if (advanced !== null) {
+    parts.push(`高级+${advanced}`);
+  }
+  if (drawing !== null) {
+    parts.push(`绘画+${drawing}`);
+  }
+  return parts.join(" / ");
+}
+
+function formatImyaiRewardDiff(beforeBalance, afterBalance) {
+  const diffs = [
+    ["基础", firstNumberByKeys(beforeBalance, ["sumBasicPoints", "basicPoints", "model3Count"]), firstNumberByKeys(afterBalance, ["sumBasicPoints", "basicPoints", "model3Count"])],
+    ["高级", firstNumberByKeys(beforeBalance, ["sumAdvancedPoints", "advancedPoints", "model4Count"]), firstNumberByKeys(afterBalance, ["sumAdvancedPoints", "advancedPoints", "model4Count"])],
+    ["绘画", firstNumberByKeys(beforeBalance, ["sumDrawingPoints", "drawingPoints", "drawMjCount"]), firstNumberByKeys(afterBalance, ["sumDrawingPoints", "drawingPoints", "drawMjCount"])],
+    ["智能体", firstNumberByKeys(beforeBalance, ["agentPoints", "sumAgentPoints"]), firstNumberByKeys(afterBalance, ["agentPoints", "sumAgentPoints"])],
+  ];
+  const parts = diffs
+    .map((item) => [item[0], numberDiff(item[1], item[2])])
+    .filter((item) => item[1] !== null && item[1] > 0)
+    .map((item) => `${item[0]}+${item[1]}`);
+  return parts.join(" / ");
+}
+
+function numberDiff(before, after) {
+  const beforeNumber = numberFromText(before);
+  const afterNumber = numberFromText(after);
+  if (beforeNumber === null || afterNumber === null || afterNumber < beforeNumber) {
+    return null;
+  }
+  return afterNumber - beforeNumber;
+}
+
+function firstStringByKeys(obj, keys) {
+  const found = findByKeys(obj, keys);
+  if (found === undefined || found === null || typeof found === "object") {
+    return "";
+  }
+  return String(found);
+}
+
+function firstNumberByKeys(obj, keys) {
+  const found = findByKeys(obj, keys);
+  if (found === undefined || found === null || found === "") {
+    return null;
+  }
+  const value = Number(found);
+  return Number.isFinite(value) ? value : null;
+}
+
+function findByKeys(obj, keys) {
+  if (!obj || typeof obj !== "object") {
+    return undefined;
+  }
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      return obj[key];
+    }
+  }
+  const nested = obj.data && typeof obj.data === "object" ? findByKeys(obj.data, keys) : undefined;
+  if (nested !== undefined) {
+    return nested;
+  }
+  return undefined;
+}
+
+function extractHiddenField(html, fieldName) {
+  const text = String(html || "");
+  const inputTags = text.match(/<input\b[^>]*>/gi) || [];
+  const wanted = String(fieldName || "").toLowerCase();
+  for (const tag of inputTags) {
+    const name = match(tag, /\bname\s*=\s*["']([^"']+)["']/i).toLowerCase();
+    const id = match(tag, /\bid\s*=\s*["']([^"']+)["']/i).toLowerCase();
+    if (name !== wanted && id !== wanted) {
+      continue;
+    }
+    const value = match(tag, /\bvalue\s*=\s*["']([^"']*)["']/i);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+function match(text, regex) {
+  const found = regex.exec(String(text || ""));
+  return found ? found[1] : "";
+}
+
+function skipped(title, reason) {
+  return { title, status: "未配置", error: reason };
+}
+
+function valueOf(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback === undefined ? 0 : fallback;
+  }
+  return value;
+}
+
+function numberFromText(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const found = String(value).replace(/,/g, "").match(/\d+/);
+  const number = Number(found ? found[0] : "");
+  return Number.isFinite(number) ? number : null;
+}
+
+function describeError(error) {
+  if (!error) {
+    return "未知错误";
+  }
+  if (error.message) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch (jsonError) {
+    return String(error);
+  }
+}
+
+function isHashiqiRedirectPage(body) {
+  const text = String(body || "");
+  return /Object moved to.*login\.aspx/i.test(text) || (/Object moved/i.test(text) && text.length < 500);
+}
+
+function isRedirectLoopError(error) {
+  return /too many redirections|too many redirects|redirect/i.test(describeError(error));
+}
+
+function simpleHash(value) {
+  let hash = 0;
+  const text = String(value || "");
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function validateConfig() {
+  const webhook = config("WECOM_WEBHOOK_URL");
+  if (webhook && !/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=/.test(webhook)) {
+    throw new Error("WECOM_WEBHOOK_URL 格式不正确");
+  }
+  const cryptoJsUrl = config("CRYPTOJS_URL");
+  if (cryptoJsUrl && !/^https?:\/\//.test(cryptoJsUrl)) {
+    throw new Error("CRYPTOJS_URL 必须是 http/https URL");
+  }
+}
+
+function requestTimeoutMs() {
+  const value = Number(config("REQUEST_TIMEOUT_MS") || 10000);
+  return Number.isFinite(value) && value > 0 ? value : 10000;
+}
+
+function requestRetries() {
+  const value = Number(config("REQUEST_RETRIES") || 2);
+  return Number.isFinite(value) && value >= 0 ? Math.min(value, 5) : 2;
+}
+
+function debugEnabled() {
+  return /^(1|true|yes|on)$/i.test(String(config("DEBUG") || ""));
+}
+
+function debugLog(message) {
+  if (debugEnabled() && typeof console !== "undefined" && console.log) {
+    console.log(`[DEBUG] ${message}`);
+  }
+}
+
+function warnLog(message) {
+  if (debugEnabled() && typeof console !== "undefined" && console.log) {
+    console.log(`[WARN] ${message}`);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function todayString() {
+  const date = new Date();
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function monthString() {
+  const date = new Date();
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}`;
+}
+
+function timestampDate(value) {
+  if (!value) {
+    return "";
+  }
+  let ms = Number(value);
+  if (ms < 1000000000000) {
+    ms *= 1000;
+  }
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function userAgent() {
+  return "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Surge";
+}
+
+function notify(title, subtitle, body) {
+  if (typeof $notification !== "undefined" && $notification.post) {
+    $notification.post(title, subtitle || "", body || "");
+  }
+}
+
+function done(value) {
+  if (typeof $done !== "undefined") {
+    $done(value || {});
+  }
+}
+
+function globalEval(source) {
+  (0, eval)(source);
+}
