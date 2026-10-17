@@ -1,5 +1,5 @@
 #!name=WPS 每日签到
-#!desc=WPS 自动获取 Cookie + 每天10点签到
+#!desc=WPS 自动获取 Cookie + 每天07:36签到；策略组页「WPS · 手动测试」面板可立即执行。
 
 [MITM]
 hostname = %APPEND% personal-act.wps.cn
@@ -7,4 +7,9 @@ hostname = %APPEND% personal-act.wps.cn
 [Script]
 WPS Cookie = type=http-request, pattern=^https:\/\/personal-act\.wps\.cn\/activity-rubik\/activity\/page_info, requires-body=false, max-size=0, script-path=https://raw.githubusercontent.com/MaYIHEI/paperclip/refs/heads/main/app/wps/wps.cookie.js
 
-WPS签到 = type=cron, cronexp="0 10 * * *", wake-system=true, timeout=120, script-path=https://raw.githubusercontent.com/MaYIHEI/paperclip/refs/heads/main/app/wps/wps.js
+WPS签到 = type=cron, cronexp="36 7 * * *", wake-system=true, timeout=120, script-path=https://raw.githubusercontent.com/MaYIHEI/paperclip/refs/heads/main/app/wps/wps.js
+
+WPS_Manual_Test = type=generic, script-path=https://raw.githubusercontent.com/Tizzy-3/Surge/main/wps/wps.panel.js?v=0736-panel-1, timeout=150, engine=jsc
+
+[Panel]
+WPS_Manual_Panel = title="WPS · 手动测试",content="点击右上角刷新按钮执行 WPS 任务。\n每天07:36自动运行。",style=info,script-name=WPS_Manual_Test
